@@ -9,20 +9,20 @@ permissions:
 
 jobs:
   compile:
-    name: Compile Telegram Modules
+    name: Compile MessageWidget
     runs-on: xcode-27
     timeout-minutes: 180
 
     steps:
-      # 1. Checkout repository
-      - name: Checkout Telegram source
+      # 1. Checkout
+      - name: Checkout Telegram
         uses: actions/checkout@v4
         with:
           submodules: false
           persist-credentials: false
 
-      # 2. Fix tgcalls submodule URL
-      - name: Fix submodule URLs
+      # 2. Fix submodules
+      - name: Initialize submodules
         shell: bash
         run: |
           set -euo pipefail
@@ -31,13 +31,11 @@ jobs:
             submodule.submodules/TgVoipWebrtc/tgcalls.url \
             https://github.com/TelegramMessenger/tgcalls.git
 
-          git submodule sync
+          git submodule sync --recursive
           git submodule update --init --recursive --jobs 4
 
-          echo "Submodules initialized"
-
-      # 3. Check environment
-      - name: Check macOS and Xcode
+      # 3. Verify environment
+      - name: Check build environment
         shell: bash
         run: |
           set -euo pipefail
@@ -48,8 +46,8 @@ jobs:
           cat versions.json
           df -h .
 
-      # 4. Generate private configuration
-      - name: Prepare build configuration
+      # 4. Create private configuration
+      - name: Prepare configuration
         shell: bash
         env:
           API_ID: ${{ secrets.TELEGRAM_API_ID }}
@@ -67,9 +65,7 @@ jobs:
           api_hash = os.environ.get("API_HASH", "")
 
           if not api_id.isdigit() or not api_hash:
-              raise SystemExit(
-                  "Missing Telegram API credentials"
-              )
+              raise SystemExit("Invalid API credentials")
 
           template = Path(
               "build-system/"
@@ -80,10 +76,8 @@ jobs:
               template.read_text(encoding="utf-8")
           )
 
-          repository = os.environ["GITHUB_REPOSITORY"]
-
           unique_id = hashlib.sha256(
-              repository.encode()
+              os.environ["GITHUB_REPOSITORY"].encode()
           ).hexdigest()[:12]
 
           config["bundle_id"] = (
@@ -92,13 +86,12 @@ jobs:
 
           config["api_id"] = api_id
           config["api_hash"] = api_hash
-
-          # Temporary value for compile-only build.
           config["team_id"] = "0000000000"
 
           config["is_internal_build"] = "true"
           config["is_appstore_build"] = "false"
           config["appstore_id"] = "0"
+
           config["enable_siri"] = False
           config["enable_icloud"] = False
 
@@ -111,28 +104,39 @@ jobs:
               json.dumps(config, indent=2),
               encoding="utf-8"
           )
-
           destination.chmod(0o600)
 
           with open(
               os.environ["GITHUB_ENV"], "a"
-          ) as env_file:
-              env_file.write(
+          ) as output:
+              output.write(
                   f"BUILD_CONFIG={destination}\n"
               )
 
-          print("Private configuration ready")
-          print("API credentials are not printed")
+          print("Build configuration prepared")
           PY
 
-      # 5. Compile Telegram modules
-     
-      - name: Compile Telegram Swift modules
+      # 5. Verify Swift fix
+      - name: Verify MessageWidget patch
         shell: bash
         run: |
           set -euo pipefail
 
-          # Prepare Bazel and build configuration.
+          FILE="submodules/TelegramUI/Components/MessageWidget/MessageWidget/Sources/MessageWidgetInstance.swift"
+
+          if grep -Fq "scale: CGFloat = UIScreen.main.scale" "$FILE"; then
+            echo "::error::UIScreen.main.scale is not patched"
+            exit 1
+          fi
+
+          echo "Previous Swift issue is patched"
+
+      # 6. Initialize Bazel
+      - name: Initialize Bazel
+        shell: bash
+        run: |
+          set -euo pipefail
+
           python3 build-system/Make/Make.py \
             --cacheDir="$RUNNER_TEMP/bazel-cache" \
             build \
@@ -142,10 +146,18 @@ jobs:
             --buildNumber=100001 \
             --configuration=debug_arm64
 
-          # Build the Swift modules explicitly for iOS.
+      # 7. Compile problematic module for iOS
+      - name: Compile MessageWidget for iOS
+        shell: bash
+        run: |
+          set -euo pipefail
+
           BAZEL="build-input/bazel-9.2.0-darwin-arm64"
 
-          "$BAZEL" build //Telegram:Lib \
+          test -x "$BAZEL"
+
+          "$BAZEL" build \
+            //submodules/TelegramUI/Components/MessageWidget/MessageWidget:MessageWidget \
             --platforms=@build_bazel_apple_support//platforms:ios_arm64 \
             --apple_platform_type=ios \
             --ios_multi_cpus=arm64 \
@@ -153,33 +165,26 @@ jobs:
             --jobs=2 \
             --verbose_failures
 
-          echo "Telegram iOS modules compiled successfully"
+          echo "MessageWidget compiled successfully"
 
-
-      # 6. Final report
-      - name: Create compilation report
+      # 8. Diagnostics
+      - name: Create report
         if: always()
         shell: bash
         run: |
           {
-            echo "Personal Telegram - Compile Report"
-            echo "=================================="
+            echo "Personal Telegram Compile Report"
+            echo "================================"
             echo ""
-            echo "Commit:"
             git rev-parse HEAD
             echo ""
-            echo "Xcode:"
             xcodebuild -version
             echo ""
-            echo "Bazel version requirement:"
-            cat versions.json
-            echo ""
-            echo "Disk:"
             df -h .
           } > compile-report.txt
 
-      # 7. Upload report
-      - name: Upload compilation report
+      # 9. Upload diagnostics
+      - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4
         with:
