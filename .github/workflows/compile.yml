@@ -96,6 +96,7 @@ jobs:
           print("Configuration prepared")
           PY
 
+      
       - name: Attempt Bazel device build
         shell: bash
         run: |
@@ -103,11 +104,13 @@ jobs:
 
           python3 build-system/Make/Make.py \
             --cacheDir="$RUNNER_TEMP/bazel-cache" \
+            --bazelArguments="--//Telegram:disableExtensions --//Telegram:disableProvisioningProfiles" \
             build \
             --configurationPath="$BUILD_CONFIG" \
             --xcodeManagedCodesigning \
             --buildNumber=100001 \
             --configuration=debug_arm64
+
 
       - name: Check for IPA
         if: success()
