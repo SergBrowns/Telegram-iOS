@@ -1,0 +1,44 @@
+
+name: Telegram iOS - Environment Check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: macos-26
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Check macOS and Xcode
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcode-select -p
+
+      - name: Check build requirements
+        run: |
+          cat versions.json
+          python3 --version
+          git rev-parse HEAD
+
+      - name: Check Bazel configuration
+        run: |
+          ls -la tools
+          ls -la build-system/Make
+          test -f Telegram/BUILD
+          test -f build-system/Make/Make.py
+          echo "Repository structure OK"
+
+      - name: Check disk space
+        run: |
+          df -h .
+          sysctl -n hw.memsize
