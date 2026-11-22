@@ -97,19 +97,65 @@ jobs:
           PY
 
       
-      - name: Attempt Bazel device build
+      
+      - name: Patch Bazel flags and compile
         shell: bash
         run: |
           set -euo pipefail
 
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("build-system/Make/Make.py")
+          source = path.read_text()
+
+          marker = "        combined_arguments += self.configuration_args"
+
+          patch = """
+          combined_arguments += [
+              '--//Telegram:disableExtensions=true',
+              '--//Telegram:disableProvisioningProfiles=true',
+          ]
+          """
+
+          replacement = (
+              "        combined_arguments += [\n"
+              "            '--//Telegram:disableExtensions=true',\n"
+              "            '--//Telegram:disableProvisioningProfiles=true',\n"
+              "        ]\n"
+              + marker
+          )
+
+          if source.count(marker) != 2:
+              raise SystemExit(
+                  "Unexpected Make.py structure; patch aborted"
+              )
+
+          # Patch only invoke_build(), not invoke_test().
+          start = source.index("    def invoke_build(self):")
+          end = source.index("    def invoke_test(", start)
+
+          section = source[start:end]
+
+          if section.count(marker) != 1:
+              raise SystemExit("Build section changed")
+
+          section = section.replace(marker, replacement)
+
+          source = source[:start] + section + source[end:]
+          path.write_text(source)
+
+          print("Bazel build flags patched successfully")
+          PY
+
           python3 build-system/Make/Make.py \
             --cacheDir="$RUNNER_TEMP/bazel-cache" \
-            --bazelArguments="--//Telegram:disableExtensions --//Telegram:disableProvisioningProfiles" \
             build \
             --configurationPath="$BUILD_CONFIG" \
             --xcodeManagedCodesigning \
             --buildNumber=100001 \
             --configuration=debug_arm64
+
 
 
       - name: Check for IPA
