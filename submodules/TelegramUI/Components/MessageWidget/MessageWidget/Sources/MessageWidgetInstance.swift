@@ -297,7 +297,7 @@ public final class MessageWidgetInstance {
     /// bot's state it starts with, which `setState` changes.
     /// `limits`: widget-sandbox v0.3.0's counted caps, strict for every widget the app shows (compat: the stress kit's
     /// measuring runs). `cpuLimits`: its runtime limits, the product's for every widget the app shows.
-    public init?(source: String, theme: Theme, stoppedLabel: String, maxMessageLength: Int, locale: String = "en-US", storage: MessageWidgetStorage = .empty, context: MessageWidgetContext = MessageWidgetContext(), state: MessageWidgetState = .empty, startsStopped: Bool = false, pool: MessageWidgetPool = .shared, waitPolicy: MessageWidgetWaitPolicy = .standard, turn: MessageWidgetTurn = .shared, scale: CGFloat = UIScreen.main.scale, limits: MessageWidgetLimitPolicy = .strict, cpuLimits: MessageWidgetCpuLimits = .product) {
+    public init?(source: String, theme: Theme, stoppedLabel: String, maxMessageLength: Int, locale: String = "en-US", storage: MessageWidgetStorage = .empty, context: MessageWidgetContext = MessageWidgetContext(), state: MessageWidgetState = .empty, startsStopped: Bool = false, pool: MessageWidgetPool = .shared, waitPolicy: MessageWidgetWaitPolicy = .standard, turn: MessageWidgetTurn = .shared, scale: CGFloat = max(UITraitCollection.current.displayScale, 1.0), limits: MessageWidgetLimitPolicy = .strict, cpuLimits: MessageWidgetCpuLimits = .product) {
         let timers = MessageWidgetTimers()
         self.startedStopped = startsStopped
         let storageCommitSink = StorageCommitSink()
