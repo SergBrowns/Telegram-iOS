@@ -125,7 +125,37 @@ jobs:
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security list-keychains -d user -s "$KEYCHAIN" "$HOME/Library/Keychains/login.keychain-db"
           security default-keychain -d user -s "$KEYCHAIN"
-          security import "$SIGN_DIR/certs/developer.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          
+          umask 077
+          
+          TEMP_PEM="$RUNNER_TEMP/telegram-signing-temp.pem"
+          COMPAT_P12="$RUNNER_TEMP/telegram-signing-compatible.p12"
+          
+          trap 'rm -f "$TEMP_PEM" "$COMPAT_P12"' EXIT
+          
+          echo "Converting signing certificate..."
+          
+          openssl pkcs12 \
+            -in "$SIGN_DIR/certs/developer.p12" \
+            -passin env:P12_PASSWORD \
+            -nodes \
+            -out "$TEMP_PEM"
+          
+          openssl pkcs12 -export \
+            -in "$TEMP_PEM" \
+            -out "$COMPAT_P12" \
+            -passout env:P12_PASSWORD \
+            -keypbe PBE-SHA1-3DES \
+            -certpbe PBE-SHA1-3DES \
+            -macalg sha1
+          
+          security import "$COMPAT_P12" \
+            -k "$KEYCHAIN" \
+            -P "$P12_PASSWORD" \
+            -T /usr/bin/codesign
+          
+          echo "Certificate imported successfully"
+
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
           security find-identity -v -p codesigning "$KEYCHAIN"
           echo "KEYCHAIN_PATH=$KEYCHAIN" >> "$GITHUB_ENV"
