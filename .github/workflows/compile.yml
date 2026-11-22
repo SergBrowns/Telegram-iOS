@@ -1,0 +1,126 @@
+
+name: Compile Telegram iOS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: xcode-27
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: Fix and download submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config -f .gitmodules \
+            submodule.submodules/TgVoipWebrtc/tgcalls.url \
+            https://github.com/TelegramMessenger/tgcalls.git
+          git submodule sync
+          git submodule update --init --recursive --jobs 4
+
+      - name: Check requirements
+        run: |
+          xcodebuild -version
+          cat versions.json
+          df -h .
+
+      - name: Prepare private configuration
+        env:
+          API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import os
+          import hashlib
+          from pathlib import Path
+
+          api_id = os.environ["API_ID"]
+          api_hash = os.environ["API_HASH"]
+
+          if not api_id.isdigit() or not api_hash:
+              raise SystemExit(
+                  "Missing or invalid Telegram API secrets"
+              )
+
+          template = Path(
+              "build-system/"
+              "template_minimal_development_configuration.json"
+          )
+
+          config = json.loads(template.read_text())
+
+          identifier = hashlib.sha256(
+              os.environ["GITHUB_REPOSITORY"].encode()
+          ).hexdigest()[:12]
+
+          config["bundle_id"] = (
+              f"org.personalstudy.{identifier}"
+          )
+          config["api_id"] = api_id
+          config["api_hash"] = api_hash
+
+          # Placeholder for an unsigned-build experiment.
+          # This is NOT an Apple Developer Team ID.
+          config["team_id"] = "0000000000"
+
+          config["enable_siri"] = False
+          config["enable_icloud"] = False
+
+          destination = Path(
+              os.environ["RUNNER_TEMP"]
+          ) / "telegram-build.json"
+
+          destination.write_text(
+              json.dumps(config, indent=2)
+          )
+          destination.chmod(0o600)
+
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"BUILD_CONFIG={destination}\n")
+
+          print("Configuration prepared")
+          PY
+
+      - name: Attempt Bazel device build
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 build-system/Make/Make.py \
+            --cacheDir="$RUNNER_TEMP/bazel-cache" \
+            build \
+            --configurationPath="$BUILD_CONFIG" \
+            --xcodeManagedCodesigning \
+            --buildNumber=100001 \
+            --configuration=debug_arm64
+
+      - name: Check for IPA
+        if: success()
+        shell: bash
+        run: |
+          test -f bazel-bin/Telegram/Telegram.ipa
+          unzip -t bazel-bin/Telegram/Telegram.ipa
+
+      - name: Upload IPA if built
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: personal-telegram-ipa
+          path: bazel-bin/Telegram/Telegram.ipa
+          if-no-files-found: error
+          retention-days: 3
