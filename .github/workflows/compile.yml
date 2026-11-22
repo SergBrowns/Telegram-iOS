@@ -9,37 +9,51 @@ permissions:
 
 jobs:
   compile:
+    name: Compile Telegram Modules
     runs-on: xcode-27
     timeout-minutes: 180
 
     steps:
-      - name: Checkout
+      # 1. Checkout repository
+      - name: Checkout Telegram source
         uses: actions/checkout@v4
         with:
           submodules: false
           persist-credentials: false
 
-      - name: Fix and download submodules
+      # 2. Fix tgcalls submodule URL
+      - name: Fix submodule URLs
         shell: bash
         run: |
           set -euo pipefail
+
           git config -f .gitmodules \
             submodule.submodules/TgVoipWebrtc/tgcalls.url \
             https://github.com/TelegramMessenger/tgcalls.git
+
           git submodule sync
           git submodule update --init --recursive --jobs 4
 
-      - name: Check requirements
+          echo "Submodules initialized"
+
+      # 3. Check environment
+      - name: Check macOS and Xcode
+        shell: bash
         run: |
+          set -euo pipefail
+
+          sw_vers
           xcodebuild -version
+          python3 --version
           cat versions.json
           df -h .
 
-      - name: Prepare private configuration
+      # 4. Generate private configuration
+      - name: Prepare build configuration
+        shell: bash
         env:
           API_ID: ${{ secrets.TELEGRAM_API_ID }}
           API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
-        shell: bash
         run: |
           set -euo pipefail
 
@@ -49,12 +63,12 @@ jobs:
           import hashlib
           from pathlib import Path
 
-          api_id = os.environ["API_ID"]
-          api_hash = os.environ["API_HASH"]
+          api_id = os.environ.get("API_ID", "")
+          api_hash = os.environ.get("API_HASH", "")
 
           if not api_id.isdigit() or not api_hash:
               raise SystemExit(
-                  "Missing or invalid Telegram API secrets"
+                  "Missing Telegram API credentials"
               )
 
           template = Path(
@@ -62,114 +76,99 @@ jobs:
               "template_minimal_development_configuration.json"
           )
 
-          config = json.loads(template.read_text())
+          config = json.loads(
+              template.read_text(encoding="utf-8")
+          )
 
-          identifier = hashlib.sha256(
-              os.environ["GITHUB_REPOSITORY"].encode()
+          repository = os.environ["GITHUB_REPOSITORY"]
+
+          unique_id = hashlib.sha256(
+              repository.encode()
           ).hexdigest()[:12]
 
           config["bundle_id"] = (
-              f"org.personalstudy.{identifier}"
+              f"org.personalstudy.{unique_id}"
           )
+
           config["api_id"] = api_id
           config["api_hash"] = api_hash
 
-          # Placeholder for an unsigned-build experiment.
-          # This is NOT an Apple Developer Team ID.
+          # Temporary value for compile-only build.
           config["team_id"] = "0000000000"
 
+          config["is_internal_build"] = "true"
+          config["is_appstore_build"] = "false"
+          config["appstore_id"] = "0"
           config["enable_siri"] = False
           config["enable_icloud"] = False
 
-          destination = Path(
-              os.environ["RUNNER_TEMP"]
-          ) / "telegram-build.json"
+          destination = (
+              Path(os.environ["RUNNER_TEMP"])
+              / "telegram-build.json"
+          )
 
           destination.write_text(
-              json.dumps(config, indent=2)
+              json.dumps(config, indent=2),
+              encoding="utf-8"
           )
+
           destination.chmod(0o600)
 
-          with open(os.environ["GITHUB_ENV"], "a") as f:
-              f.write(f"BUILD_CONFIG={destination}\n")
+          with open(
+              os.environ["GITHUB_ENV"], "a"
+          ) as env_file:
+              env_file.write(
+                  f"BUILD_CONFIG={destination}\n"
+              )
 
-          print("Configuration prepared")
+          print("Private configuration ready")
+          print("API credentials are not printed")
           PY
 
-      
-      
-      - name: Patch Bazel flags and compile
+      # 5. Compile Telegram modules
+      - name: Compile Telegram Swift modules
         shell: bash
         run: |
           set -euo pipefail
-
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("build-system/Make/Make.py")
-          source = path.read_text()
-
-          marker = "        combined_arguments += self.configuration_args"
-
-          patch = """
-          combined_arguments += [
-              '--//Telegram:disableExtensions=true',
-              '--//Telegram:disableProvisioningProfiles=true',
-          ]
-          """
-
-          replacement = (
-              "        combined_arguments += [\n"
-              "            '--//Telegram:disableExtensions=true',\n"
-              "            '--//Telegram:disableProvisioningProfiles=true',\n"
-              "        ]\n"
-              + marker
-          )
-
-          if source.count(marker) != 2:
-              raise SystemExit(
-                  "Unexpected Make.py structure; patch aborted"
-              )
-
-          # Patch only invoke_build(), not invoke_test().
-          start = source.index("    def invoke_build(self):")
-          end = source.index("    def invoke_test(", start)
-
-          section = source[start:end]
-
-          if section.count(marker) != 1:
-              raise SystemExit("Build section changed")
-
-          section = section.replace(marker, replacement)
-
-          source = source[:start] + section + source[end:]
-          path.write_text(source)
-
-          print("Bazel build flags patched successfully")
-          PY
 
           python3 build-system/Make/Make.py \
             --cacheDir="$RUNNER_TEMP/bazel-cache" \
             build \
             --configurationPath="$BUILD_CONFIG" \
             --xcodeManagedCodesigning \
+            --target=//Telegram:Lib \
             --buildNumber=100001 \
             --configuration=debug_arm64
 
+          echo "Telegram module compilation completed"
 
-
-      - name: Check for IPA
-        if: success()
+      # 6. Final report
+      - name: Create compilation report
+        if: always()
         shell: bash
         run: |
-          test -f bazel-bin/Telegram/Telegram.ipa
-          unzip -t bazel-bin/Telegram/Telegram.ipa
+          {
+            echo "Personal Telegram - Compile Report"
+            echo "=================================="
+            echo ""
+            echo "Commit:"
+            git rev-parse HEAD
+            echo ""
+            echo "Xcode:"
+            xcodebuild -version
+            echo ""
+            echo "Bazel version requirement:"
+            cat versions.json
+            echo ""
+            echo "Disk:"
+            df -h .
+          } > compile-report.txt
 
-      - name: Upload IPA if built
-        if: success()
+      # 7. Upload report
+      - name: Upload compilation report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: personal-telegram-ipa
-          path: bazel-bin/Telegram/Telegram.ipa
-          if-no-files-found: error
-          retention-days: 3
+          name: telegram-compile-report
+          path: compile-report.txt
+          retention-days: 7
