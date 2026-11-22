@@ -126,6 +126,14 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN" "$HOME/Library/Keychains/login.keychain-db"
           security default-keychain -d user -s "$KEYCHAIN"
           security import "$SIGN_DIR/certs/developer.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          echo "=== P12 SHA256 ==="
+          shasum -a 256 "$SIGN_DIR/certs/developer.p12"
+          
+          echo "=== OpenSSL PKCS12 check ==="
+          openssl pkcs12 \
+            -in "$SIGN_DIR/certs/developer.p12" \
+            -passin env:P12_PASSWORD \
+            -info -noout
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
           security find-identity -v -p codesigning "$KEYCHAIN"
           echo "KEYCHAIN_PATH=$KEYCHAIN" >> "$GITHUB_ENV"
