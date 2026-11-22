@@ -126,21 +126,35 @@ jobs:
           PY
 
       # 5. Compile Telegram modules
+     
       - name: Compile Telegram Swift modules
         shell: bash
         run: |
           set -euo pipefail
 
+          # Prepare Bazel and build configuration.
           python3 build-system/Make/Make.py \
             --cacheDir="$RUNNER_TEMP/bazel-cache" \
             build \
             --configurationPath="$BUILD_CONFIG" \
             --xcodeManagedCodesigning \
-            --target=//Telegram:Lib \
+            --target=//Telegram:empty \
             --buildNumber=100001 \
             --configuration=debug_arm64
 
-          echo "Telegram module compilation completed"
+          # Build the Swift modules explicitly for iOS.
+          BAZEL="build-input/bazel-9.2.0-darwin-arm64"
+
+          "$BAZEL" build //Telegram:Lib \
+            --platforms=@apple_support//platforms:ios_arm64 \
+            --apple_platform_type=ios \
+            --ios_multi_cpus=arm64 \
+            --compilation_mode=dbg \
+            --jobs=2 \
+            --verbose_failures
+
+          echo "Telegram iOS modules compiled successfully"
+
 
       # 6. Final report
       - name: Create compilation report
