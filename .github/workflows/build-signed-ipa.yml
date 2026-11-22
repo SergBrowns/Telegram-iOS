@@ -1,0 +1,176 @@
+name: Build signed Telegram IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_ipa:
+        description: 'Build IPA after signing preflight (false = validate only)'
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  signing-and-build:
+    runs-on: xcode-27
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: Prepare private signing files
+        shell: bash
+        env:
+          P12_B64: ${{ secrets.IOS_P12_BASE64 }}
+          PROFILE_B64: ${{ secrets.IOS_PROFILE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
+          API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$P12_B64" && test -n "$PROFILE_B64" && test -n "$P12_PASSWORD"
+          test -n "$API_ID" && test -n "$API_HASH"
+          SIGN_DIR="$RUNNER_TEMP/telegram-signing"
+          mkdir -p "$SIGN_DIR/profiles" "$SIGN_DIR/certs"
+          printf '%s' "$P12_B64" | base64 -D > "$SIGN_DIR/certs/developer.p12"
+          printf '%s' "$PROFILE_B64" | base64 -D > "$SIGN_DIR/profiles/app.mobileprovision"
+          echo "SIGN_DIR=$SIGN_DIR" >> "$GITHUB_ENV"
+          python3 - <<'PY'
+          import datetime, hashlib, json, os, plistlib, subprocess
+          from pathlib import Path
+
+          d = Path(os.environ['RUNNER_TEMP']) / 'telegram-signing'
+          profile = d / 'profiles/app.mobileprovision'
+          p12 = d / 'certs/developer.p12'
+          data = subprocess.check_output(['security', 'cms', '-D', '-i', str(profile)])
+          p = plistlib.loads(data)
+          e = p['Entitlements']
+          app = e.get('application-identifier', '')
+          team = p.get('TeamIdentifier', [''])[0]
+          if not team or not app.startswith(team + '.'):
+              raise SystemExit('Profile has no usable Team ID / application identifier')
+          bundle = app[len(team)+1:]
+          if not bundle or '*' in bundle:
+              raise SystemExit('Wildcard profile not supported by this preflight: use explicit App ID')
+          now = datetime.datetime.now(datetime.timezone.utc)
+          expires = p['ExpirationDate'].replace(tzinfo=datetime.timezone.utc)
+          if expires <= now:
+              raise SystemExit('Provisioning profile is expired')
+          if 'aps-environment' not in e:
+              raise SystemExit('Profile lacks aps-environment; Telegram Make.py requires it')
+          if not (p.get('ProvisionedDevices') or p.get('ProvisionsAllDevices')):
+              raise SystemExit('This is likely an App Store profile, not installable directly on a device')
+          password = os.environ['P12_PASSWORD']
+          pem = subprocess.check_output([
+              'openssl','pkcs12','-in',str(p12),'-clcerts','-nokeys',
+              '-passin','env:P12_PASSWORD'
+          ])
+          der = subprocess.check_output(['openssl','x509','-outform','DER'], input=pem)
+          fingerprint = hashlib.sha1(der).hexdigest().upper()
+          permitted = {hashlib.sha1(x).hexdigest().upper() for x in p.get('DeveloperCertificates', [])}
+          if fingerprint not in permitted:
+              raise SystemExit('The certificate inside the p12 is not listed in the provisioning profile')
+          conf = json.loads(Path('build-system/template_minimal_development_configuration.json').read_text())
+          conf.update({
+              'bundle_id': bundle,
+              'team_id': team,
+              'api_id': os.environ['API_ID'],
+              'api_hash': os.environ['API_HASH'],
+              'is_internal_build': 'true',
+              'is_appstore_build': 'false',
+              'enable_siri': False,
+              'enable_icloud': False,
+          })
+          cfg = Path(os.environ['RUNNER_TEMP']) / 'telegram-build.json'
+          cfg.write_text(json.dumps(conf))
+          cfg.chmod(0o600)
+          with open(os.environ['GITHUB_ENV'], 'a') as f:
+              f.write(f'BUILD_CONFIG={cfg}\n')
+              f.write(f'BUNDLE_ID={bundle}\n')
+              f.write(f'TEAM_ID={team}\n')
+          print('Profile valid. Bundle ID:', bundle)
+          print('Team ID:', team)
+          print('Profile expiration (UTC):', expires.isoformat())
+          print('Profile certificate matches p12 certificate')
+          print('Push entitlement:', e['aps-environment'])
+          print('Registered device count:', len(p.get('ProvisionedDevices', [])))
+          PY
+
+      - name: Initialize submodules
+        if: ${{ inputs.build_ipa }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config -f .gitmodules submodule.submodules/TgVoipWebrtc/tgcalls.url https://github.com/TelegramMessenger/tgcalls.git
+          git submodule sync --recursive
+          git submodule update --init --recursive --jobs 4
+
+      - name: Import signing identity into temporary keychain
+        if: ${{ inputs.build_ipa }}
+        shell: bash
+        env:
+          P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/telegram-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" "$HOME/Library/Keychains/login.keychain-db"
+          security default-keychain -d user -s "$KEYCHAIN"
+          security import "$SIGN_DIR/certs/developer.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security find-identity -v -p codesigning "$KEYCHAIN"
+          echo "KEYCHAIN_PATH=$KEYCHAIN" >> "$GITHUB_ENV"
+
+      - name: Initialize Telegram build configuration
+        if: ${{ inputs.build_ipa }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          python3 build-system/Make/Make.py \
+            --cacheDir="$RUNNER_TEMP/bazel-cache" \
+            build \
+            --configurationPath="$BUILD_CONFIG" \
+            --codesigningInformationPath="$SIGN_DIR" \
+            --target=//Telegram:empty \
+            --buildNumber=100001 \
+            --configuration=debug_arm64
+          test -f build-input/configuration-repository/provisioning/Telegram.mobileprovision
+
+      - name: Build signed iPhone IPA (no extensions)
+        if: ${{ inputs.build_ipa }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BAZEL="build-input/bazel-9.2.0-darwin-arm64"
+          test -x "$BAZEL"
+          "$BAZEL" build //Telegram:Telegram \
+            --platforms=@build_bazel_apple_support//platforms:ios_arm64 \
+            --apple_platform_type=ios \
+            --ios_multi_cpus=arm64 \
+            --compilation_mode=dbg \
+            --//Telegram:disableExtensions=true \
+            --define=buildNumber=100001 \
+            --jobs=2 \
+            --verbose_failures
+          test -s bazel-bin/Telegram/Telegram.ipa
+          mkdir -p output
+          cp bazel-bin/Telegram/Telegram.ipa output/PersonalTelegram.ipa
+          unzip -t output/PersonalTelegram.ipa >/dev/null
+
+      - name: Upload IPA
+        if: ${{ inputs.build_ipa && success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: PersonalTelegram-signed-IPA
+          path: output/PersonalTelegram.ipa
+          retention-days: 1
