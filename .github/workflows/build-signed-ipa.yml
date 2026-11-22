@@ -1,3 +1,67 @@
+name: Build signed Telegram IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_ipa:
+        description: 'Build IPA after signing preflight (false = validate only)'
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  signing-and-build:
+    runs-on: xcode-27
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: Prepare private signing files
+        shell: bash
+        env:
+          P12_B64: ${{ secrets.IOS_P12_BASE64 }}
+          PROFILE_B64: ${{ secrets.IOS_PROFILE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
+          API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$P12_B64" && test -n "$PROFILE_B64" && test -n "$P12_PASSWORD"
+          test -n "$API_ID" && test -n "$API_HASH"
+          SIGN_DIR="$RUNNER_TEMP/telegram-signing"
+          mkdir -p "$SIGN_DIR/profiles" "$SIGN_DIR/certs"
+          printf '%s' "$P12_B64" | base64 -D > "$SIGN_DIR/certs/developer.p12"
+          printf '%s' "$PROFILE_B64" | base64 -D > "$SIGN_DIR/profiles/app.mobileprovision"
+          echo "SIGN_DIR=$SIGN_DIR" >> "$GITHUB_ENV"
+          python3 - <<'PY'
+          import datetime, hashlib, json, os, plistlib, subprocess
+          from pathlib import Path
+
+          d = Path(os.environ['RUNNER_TEMP']) / 'telegram-signing'
+          profile = d / 'profiles/app.mobileprovision'
+          p12 = d / 'certs/developer.p12'
+          data = subprocess.check_output(['security', 'cms', '-D', '-i', str(profile)])
+          p = plistlib.loads(data)
+          e = p['Entitlements']
+          app = e.get('application-identifier', '')
+          team = p.get('TeamIdentifier', [''])[0]
+          if not team or not app.startswith(team + '.'):
+              raise SystemExit('Profile has no usable Team ID / application identifier')
+          bundle = app[len(team)+1:]
+          if not bundle or '*' in bundle:
+              raise SystemExit('Wildcard profile not supported by this preflight: use explicit App ID')
+          now = datetime.datetime.now(datetime.timezone.utc)
+          expires = p['ExpirationDate'].replace(tzinfo=datetime.timezone.utc)
+          if expires <= now:
+              raise SystemExit('Provisioning profile is expired')
           if 'aps-environment' not in e:
               raise SystemExit('Profile lacks aps-environment; Telegram Make.py requires it')
           if not (p.get('ProvisionedDevices') or p.get('ProvisionsAllDevices')):
