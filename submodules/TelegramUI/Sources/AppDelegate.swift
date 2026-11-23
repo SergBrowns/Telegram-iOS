@@ -311,8 +311,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         }
         
         let baseAppBundleId = Bundle.main.bundleIdentifier!
-        let appGroupName = "group.\(baseAppBundleId)"
-
+        let appGroupName = "group.53a7958ac0994872.4"
         let configuration = URLSessionConfiguration.background(withIdentifier: identifier)
         configuration.sharedContainerIdentifier = appGroupName
         configuration.isDiscretionary = false
@@ -564,7 +563,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
         let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown"
         
         let baseAppBundleId = Bundle.main.bundleIdentifier!
-        let appGroupName = "group.\(baseAppBundleId)"
+        let appGroupName = "group.53a7958ac0994872.4"
         try! PasscodeEnvironment.shared.configure(PasscodeConfiguration(appGroupIdentifier: appGroupName, processRole: .mainApp, biometricKeychainService: walletBiometricKeychainService), privateAccessGroup: {
             BuildConfig.keychainAccessGroup(baseAppBundleId: baseAppBundleId)
         })
