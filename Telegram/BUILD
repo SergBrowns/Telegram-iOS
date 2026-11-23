@@ -1091,17 +1091,17 @@ swift_library(
         "//submodules/TelegramUI/Components/ShareExtensionContext"
     ],
 )
-
 plist_fragment(
     name = "ShareExtensionEntitlements",
     extension = "entitlements",
     template = """
 <key>com.apple.security.application-groups</key>
 <array>
-    <string>group.{telegram_bundle_id}</string>
+    <string>group.53a7958ac0994872.4</string>
 </array>
-""".format(telegram_bundle_id = telegram_bundle_id),
+""",
 )
+
 
 ios_extension(
     name = "ShareExtension",
